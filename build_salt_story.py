@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Build salt_story.html — a single-file scrollytelling page on the saltiest
+Waffle House menu items, with a sticky SVG chart that updates as you scroll.
+
+Data: menu_nutritionals.csv (extracted from Menu-Nutritionals-2026-05-05.pdf).
+"""
+import csv, re, json, statistics
+
+rows = list(csv.DictReader(open("menu_nutritionals.csv")))
+for r in rows:
+    r["sod"] = float(r["Sodium_mg"]); r["cal"] = float(r["Calories"])
+
+def short(name):                       # combo "X: desc" -> "X"
+    return name.split(":")[0].strip()
+def norm(name):                        # collapse "(1)", "- 2 Slices" variants
+    n = short(name)
+    n = re.sub(r"\s*\(\d+\)", "", n)
+    n = re.sub(r"\s*-\s*\d+\s*Slices?", "", n, flags=re.I)
+    return re.sub(r"\s+", " ", n).strip()
+
+best = {}
+for r in rows:
+    k = norm(r["Item"])
+    if k not in best or r["sod"] > best[k]["sod"]:
+        best[k] = dict(name=k, sod=r["sod"], cal=r["cal"], section=r["Section"])
+top = sorted(best.values(), key=lambda d: -d["sod"])[:10]
+
+DV = 2300
+med = round(statistics.median([r["sod"] for r in rows]))
+for d in top:
+    d["sod"] = int(d["sod"]); d["cal"] = int(d["cal"])
+    d["ham"] = "ham" in d["name"].lower()
+    d["dv"] = round(100 * d["sod"] / DV)
+
+data = {"items": top, "DV": DV, "median": med, "n": len(rows),
+        "over": sum(1 for d in top if d["sod"] >= DV),
+        "ham": sum(1 for d in top if d["ham"]),
+        "ratio": round(top[0]["sod"] / med, 1)}
+DATA = json.dumps(data, separators=(",", ":"))
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Saltiest Things at Waffle House</title>
+<style>
+  :root{ --yellow:#FFD200; --ink:#161616; --salt:#2a6fb0; --over:#e4002b; --muted:#6b6b6b; }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#faf9f6;line-height:1.55}
+  .hero{min-height:78vh;display:flex;flex-direction:column;justify-content:center;
+        padding:8vh 7vw;background:linear-gradient(180deg,#161616,#2a2a2a);color:#fff}
+  .hero .dot{color:var(--yellow);font-size:46px;line-height:1}
+  .hero h1{font-size:clamp(30px,6vw,62px);margin:.2em 0 .15em;letter-spacing:-.01em}
+  .hero h1 .y{color:var(--yellow)}
+  .hero p{font-size:clamp(15px,2.4vw,20px);max-width:40ch;color:#dcdcdc}
+  .scrolly{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+           gap:0;max-width:1180px;margin:0 auto;padding:0 4vw}
+  .narrative{padding:8vh 2vw}
+  .step{min-height:78vh;display:flex;align-items:center}
+  .step .card{background:#fff;border:1px solid #e3e3e3;border-left:5px solid var(--salt);
+              border-radius:10px;padding:20px 22px;box-shadow:0 4px 16px rgba(0,0,0,.05)}
+  .step h2{margin:.1em 0 .4em;font-size:23px}
+  .step .big{font-size:40px;font-weight:800;color:var(--salt);line-height:1}
+  .step .big.red{color:var(--over)}
+  .step p{margin:.5em 0 0;font-size:16px}
+  .sticky-wrap{position:relative}
+  .sticky{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;justify-content:center;padding:3vh 1vw}
+  .chart-title{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 0 2px}
+  .chart-sub{font-size:13px;color:var(--muted);min-height:1.2em;margin:0 0 8px;transition:opacity .3s}
+  svg{width:100%;height:auto;display:block}
+  .barbg{fill:#ecece6}
+  .bar{fill:#bcd0e6;transition:fill .4s,width .5s}
+  .bar.on{fill:var(--salt)}
+  .bar.over{fill:var(--over)}
+  .blab{font-size:11px;fill:#333}
+  .bval{font-size:11px;font-weight:700;fill:#222}
+  .refline{stroke:var(--over);stroke-width:1.5;stroke-dasharray:5 3;opacity:0;transition:opacity .4s}
+  .refline.show{opacity:1}
+  .reftxt{fill:var(--over);font-size:11px;font-weight:700;opacity:0;transition:opacity .4s}
+  .reftxt.show{opacity:1}
+  .medline{stroke:#138a3e;stroke-width:1.5;stroke-dasharray:2 2;opacity:0;transition:opacity .4s}
+  .medline.show{opacity:1}
+  .medtxt{fill:#138a3e;font-size:11px;font-weight:700;opacity:0;transition:opacity .4s}
+  .medtxt.show{opacity:1}
+  footer{max-width:760px;margin:0 auto;padding:6vh 7vw 12vh}
+  .methods{background:#fff;border:1px solid #e3e3e3;border-radius:10px;padding:18px 22px;font-size:14px;color:#333}
+  .methods h3{margin:.1em 0 .5em}
+  .methods code{background:#efece4;padding:1px 5px;border-radius:3px}
+  @media(max-width:760px){
+    .scrolly{grid-template-columns:1fr}
+    .sticky-wrap{order:-1}
+    .sticky{position:sticky;height:52vh;top:0;background:#faf9f6cc;backdrop-filter:blur(3px);border-bottom:1px solid #e3e3e3}
+    .step{min-height:70vh}
+  }
+</style>
+</head>
+<body>
+<section class="hero">
+  <div class="dot">●</div>
+  <h1>The saltiest things at <span class="y">Waffle&nbsp;House</span></h1>
+  <p>One menu item carries more than a day-and-a-half of sodium. Scroll to see the salt pile up. ↓</p>
+</section>
+
+<div class="scrolly">
+  <div class="narrative" id="narrative"></div>
+  <div class="sticky-wrap">
+    <div class="sticky">
+      <p class="chart-title">Sodium per item (mg)</p>
+      <p class="chart-sub" id="csub"></p>
+      <svg id="chart" preserveAspectRatio="xMinYMin meet"></svg>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="methods" id="methods"></div>
+</footer>
+
+<script>
+const D = __DATA__;
+const items = D.items, DV = D.DV, MED = D.median;
+
+// ---- steps: each sets highlighted indices, reference lines, and a caption ----
+const STEPS = [
+  {sub:"The 10 saltiest items, by sodium.", on:[], over:false, med:false,
+   h:"Breakfast is a salt delivery system",
+   p:`Across ${D.n} items on Waffle House's nutrition sheet, the median has about ${MED} mg of sodium. These ten are nothing like the median.`},
+  {sub:"#1 — Country Ham Biscuits (2).", on:[0], over:false, med:false,
+   h:`${items[0].sod.toLocaleString()} mg in one order`, big:items[0].sod.toLocaleString()+" mg", bigcls:"",
+   p:`<b>${items[0].name}</b> tops the list at ${items[0].sod.toLocaleString()} mg — that's <b>${items[0].dv}%</b> of an entire day's sodium in a single item.`},
+  {sub:"Red dashed line = 2,300 mg, a full day's sodium.", on:[], over:true, med:false,
+   h:"Four items blow past a full day", big:D.over+" of 10", bigcls:"red",
+   p:`The U.S. FDA Daily Value for sodium is <b>2,300 mg</b>. <b>${D.over}</b> of these ten clear that bar on their own.`},
+  {sub:"Ham items highlighted.", on:items.map((d,i)=>d.ham?i:-1).filter(i=>i>=0), over:false, med:false,
+   h:"It's the ham", big:D.ham+" of 10",
+   p:`<b>${D.ham}</b> of the ten saltiest are ham dishes — country ham alone runs 2,110 mg a slice.`},
+  {sub:"Combo bowls highlighted.", on:items.map((d,i)=>/bowl/i.test(d.name)?i:-1).filter(i=>i>=0), over:false, med:false,
+   h:"Bowls stack it up",
+   p:`Hashbrown and grits bowls pile ham, cheese, eggs and sausage into one dish — several land near or above 2,000 mg.`},
+  {sub:"Green line = the median item (~"+MED+" mg).", on:[0], over:false, med:true,
+   h:`About ${D.ratio}× the typical item`, big:D.ratio+"×",
+   p:`The median item has roughly ${MED} mg. The saltiest has about <b>${D.ratio}×</b> that — a reminder these are the extreme tail, not the typical plate.`},
+];
+
+// ---- chart ----
+const SVGNS="http://www.w3.org/2000/svg";
+const chart=document.getElementById("chart");
+const W=440, rowH=30, gap=8, padT=6, right=52;
+const H=padT*2+items.length*(rowH+gap);
+chart.setAttribute("viewBox",`0 0 ${W} ${H}`);
+const maxV=Math.max(...items.map(d=>d.sod), DV);
+const x0=8, barMax=W-x0-right;
+const X=v=>x0+barMax*v/maxV;
+function el(t,a){const e=document.createElementNS(SVGNS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}
+
+const bars=[], vals=[];
+items.forEach((d,i)=>{
+  const y=padT+i*(rowH+gap);
+  chart.appendChild(el("rect",{x:x0,y:y,width:barMax,height:rowH,rx:3,class:"barbg"}));
+  const b=el("rect",{x:x0,y:y,width:X(d.sod)-x0,height:rowH,rx:3,class:"bar"});
+  chart.appendChild(b); bars.push(b);
+  const lab=el("text",{x:x0+6,y:y+13,class:"blab"}); lab.textContent=d.name;
+  chart.appendChild(lab);
+  const sub=el("text",{x:x0+6,y:y+25,class:"blab",style:"fill:#777"}); sub.textContent=d.cal+" cal · "+d.section.slice(0,22);
+  chart.appendChild(sub);
+  const v=el("text",{x:X(d.sod)+5,y:y+rowH/2+4,class:"bval"}); v.textContent=d.sod.toLocaleString();
+  chart.appendChild(v); vals.push(v);
+});
+// DV reference line
+const dvx=X(DV);
+const dvline=el("line",{x1:dvx,y1:2,x2:dvx,y2:H-2,class:"refline"}); chart.appendChild(dvline);
+const dvtxt=el("text",{x:dvx,y:H-2,class:"reftxt","text-anchor":"middle"}); dvtxt.textContent="2,300 mg = 1 day"; chart.appendChild(dvtxt);
+// median reference line
+const mx=X(MED);
+const mline=el("line",{x1:mx,y1:2,x2:mx,y2:H-2,class:"medline"}); chart.appendChild(mline);
+const mtxt=el("text",{x:mx+3,y:14,class:"medtxt"}); mtxt.textContent="median "+MED; chart.appendChild(mtxt);
+
+function render(s){
+  document.getElementById("csub").textContent=s.sub||"";
+  bars.forEach((b,i)=>{
+    b.classList.remove("on","over");
+    if(s.over && items[i].sod>=DV) b.classList.add("over");
+    else if(s.on && s.on.includes(i)) b.classList.add("on");
+  });
+  dvline.classList.toggle("show",!!s.over);
+  dvtxt.classList.toggle("show",!!s.over);
+  mline.classList.toggle("show",!!s.med);
+  mtxt.classList.toggle("show",!!s.med);
+}
+
+// ---- build narrative steps + observer ----
+const nar=document.getElementById("narrative");
+STEPS.forEach((s,i)=>{
+  const step=document.createElement("div"); step.className="step"; step.dataset.i=i;
+  step.innerHTML=`<div class="card"><h2>${s.h}</h2>`+
+    (s.big?`<div class="big ${s.bigcls||''}">${s.big}</div>`:``)+
+    `<p>${s.p}</p></div>`;
+  nar.appendChild(step);
+});
+const obs=new IntersectionObserver((es)=>{
+  es.forEach(e=>{ if(e.isIntersecting) render(STEPS[+e.target.dataset.i]); });
+},{rootMargin:"-45% 0px -45% 0px",threshold:0});
+document.querySelectorAll(".step").forEach(s=>obs.observe(s));
+render(STEPS[0]);
+
+// ---- methods ----
+document.getElementById("methods").innerHTML=
+  `<h3>Methods &amp; source</h3>`+
+  `Sodium figures come from Waffle House's published nutrition sheet, `+
+  `<code>Menu-Nutritionals-2026-05-05.pdf</code> (dated 05/05/2026). The 10 pages were `+
+  `extracted to <code>menu_nutritionals.csv</code> with <code>extract_menu.py</code> and `+
+  `verified row-by-row against the PDF (see <code>MENU_EXTRACTION_VERIFICATION.md</code>). `+
+  `From ${D.n} extracted items, values are ranked by the <code>Sodium_mg</code> column; `+
+  `near-duplicate listings of the same food across menu sections (e.g. country ham) were `+
+  `collapsed to the highest single value. The “daily value” reference is the U.S. FDA Daily `+
+  `Value for sodium, 2,300 mg. Combo bowls are single menu items as listed; this chart shows `+
+  `per-item sodium, not a full meal with sides. A point-in-time menu snapshot — offerings vary by location and change over time.`;
+</script>
+</body>
+</html>
+"""
+HTML = HTML.replace("__DATA__", DATA)
+open("salt_story.html", "w", encoding="utf-8").write(HTML)
+print(f"wrote salt_story.html ({len(HTML)} bytes); top item {top[0]['name']} {top[0]['sod']} mg; median {med}; over-DV {data['over']}")
