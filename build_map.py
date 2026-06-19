@@ -37,6 +37,29 @@ with open(CSV_PATH, newline="", encoding="utf-8") as f:
 FIELDS = ["code", "name", "addr", "city", "state", "zip",
           "lat", "lon", "phone", "hours", "op", "museum"]
 
+# ---- 1b. Huddle Houses (optional second chain) ------------------------------
+# A small, manually sourced sample (real addresses from huddlehouse.com store
+# pages; coordinates are approximate town-level placements). Loaded if present.
+import os
+HUDDLE_PATH = "huddle_houses.csv"
+huddle = []
+if os.path.exists(HUDDLE_PATH):
+    with open(HUDDLE_PATH, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            huddle.append([
+                r["Business Name"],
+                r["Address"],
+                r["City"],
+                r["State"],
+                r["Postal Code"],
+                round(float(r["Latitude"]), 4),
+                round(float(r["Longitude"]), 4),
+            ])
+HUDDLE_FIELDS = ["name", "addr", "city", "state", "zip", "lat", "lon"]
+huddle_json = json.dumps(huddle, separators=(",", ":"))
+huddle_fields_json = json.dumps(HUDDLE_FIELDS)
+print(f"huddle houses: {len(huddle)}")
+
 # ---- 2. State outlines (filter + round to ~2 decimals) ----------------------
 def round_geom(geom, nd=2):
     t = geom["type"]
@@ -93,6 +116,8 @@ HTML = r"""<!DOCTYPE html>
   .dot { fill: var(--wh-yellow); stroke:#7a5b00; stroke-width:0.4; cursor:pointer; }
   .dot:hover { fill:#ff8a00; }
   .museum { fill:#e4002b; stroke:#fff; stroke-width:1; cursor:pointer; }
+  .huddle { fill:#1f78d1; stroke:#0a2f57; stroke-width:0.5; cursor:pointer; }
+  .huddle:hover { fill:#0a4fa0; }
   .hint { font-size:11px; color:var(--muted); margin-top:8px; }
   .bar { fill: var(--wh-yellow); cursor:pointer; }
   .bar:hover { fill:#ff8a00; }
@@ -143,8 +168,11 @@ HTML = r"""<!DOCTYPE html>
 const FIELDS = __FIELDS__;
 const LOCS = __LOCS__;
 const STATES = __STATES__;
+const HUDDLE_FIELDS = __HUDDLE_FIELDS__;
+const HUDDLE = __HUDDLE__;
 // Build index map for field positions
 const F = {}; FIELDS.forEach((n,i)=>F[n]=i);
+const H = {}; HUDDLE_FIELDS.forEach((n,i)=>H[n]=i);
 
 // ---------- projection (continental US) ----------
 // Compute lon/lat bounds from state outlines, project with a simple
@@ -208,6 +236,14 @@ function positionTip(ev){
   if(y+r.height>window.innerHeight) y=ev.clientY-r.height-pad;
   tip.style.left=x+"px"; tip.style.top=y+"px";
 }
+function showHuddleTip(ev,L){
+  tip.innerHTML =
+    '<div class="t-name" style="color:#0a4fa0">'+esc(L[H.name])+'</div>'+
+    '<div class="t-row">'+esc(L[H.addr])+'</div>'+
+    '<div class="t-row">'+esc(L[H.city])+', '+esc(L[H.state])+' '+esc(L[H.zip])+'</div>'+
+    '<div class="t-op">Huddle House · location approximate (town-level)</div>';
+  tip.style.display="block"; positionTip(ev);
+}
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 
 for(const L of LOCS){
@@ -220,6 +256,17 @@ for(const L of LOCS){
   c.addEventListener("mousemove",positionTip);
   c.addEventListener("mouseleave",()=>tip.style.display="none");
   gDots.appendChild(c);
+}
+
+// Huddle House layer (drawn on top, distinct blue squares)
+const gHuddle=el("g",{}); map.appendChild(gHuddle);
+for(const L of HUDDLE){
+  const [x,y]=proj(L[H.lon],L[H.lat]);
+  const c=el("rect",{x:(x-3).toFixed(1),y:(y-3).toFixed(1),width:6,height:6,class:"huddle"});
+  c.addEventListener("mouseenter",ev=>showHuddleTip(ev,L));
+  c.addEventListener("mousemove",positionTip);
+  c.addEventListener("mouseleave",()=>tip.style.display="none");
+  gHuddle.appendChild(c);
 }
 
 // ---------- pan / zoom via viewBox ----------
@@ -286,14 +333,19 @@ function selectState(st){ clearSel(); bars[st].classList.add("sel"); zoomTo(stat
 // ---------- header stats + legend + methods ----------
 const topState=order[0];
 document.getElementById("stats").innerHTML =
-  `<b>${total.toLocaleString()}</b> records · <b>${nStates}</b> states · most: <b>${topState}</b> (${counts[topState]}, ${(100*counts[topState]/total).toFixed(1)}%)`;
+  `<b>${total.toLocaleString()}</b> Waffle Houses · <b>${nStates}</b> states · most: <b>${topState}</b> (${counts[topState]}, ${(100*counts[topState]/total).toFixed(1)}%)`+
+  (HUDDLE.length?` &nbsp;|&nbsp; <b>${HUDDLE.length}</b> Huddle Houses (sample)`:``);
 document.getElementById("legend").innerHTML =
-  `<span style="color:#7a5b00">●</span> restaurant &nbsp;·&nbsp; <span style="color:#e4002b">◆</span> Waffle House Museum (flagged)`;
+  `<span style="color:#7a5b00">●</span> Waffle House &nbsp;·&nbsp; <span style="color:#e4002b">◆</span> Waffle House Museum`+
+  (HUDDLE.length?` &nbsp;·&nbsp; <span style="color:#1f78d1">■</span> Huddle House (${HUDDLE.length}-location sample, approx.)`:``);
 document.getElementById("methods").innerHTML =
   `Source: <code>waffle_houses.csv</code> (${total.toLocaleString()} records incl. the museum). `+
   `Map drawn offline from embedded US-state outlines; no internet or tiles required. `+
   `Counts are by the <code>State</code> field. Note from data QA: website URLs contain a `+
-  `<code>///</code> artifact and 229 rows hold two phone numbers — neither affects these counts.`;
+  `<code>///</code> artifact and 229 rows hold two phone numbers — neither affects these counts.`+
+  (HUDDLE.length?` &nbsp;Huddle Houses: a hand-picked sample of ${HUDDLE.length} real locations `+
+    `(addresses from huddlehouse.com store pages via <code>huddle_houses.csv</code>); `+
+    `their dots are placed at <b>approximate town-level coordinates</b>, not surveyed building points.`:``);
 </script>
 </body>
 </html>
@@ -302,7 +354,9 @@ document.getElementById("methods").innerHTML =
 HTML = (HTML
         .replace("__FIELDS__", fields_json)
         .replace("__LOCS__", locs_json)
-        .replace("__STATES__", states_json))
+        .replace("__STATES__", states_json)
+        .replace("__HUDDLE_FIELDS__", huddle_fields_json)
+        .replace("__HUDDLE__", huddle_json))
 
 with open(OUT_PATH, "w", encoding="utf-8") as f:
     f.write(HTML)
