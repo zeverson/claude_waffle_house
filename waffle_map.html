@@ -190,14 +190,14 @@ const order=Object.keys(counts).sort((a,b)=>counts[b]-counts[a]);
 const nStates=order.length, total=LOCS.length;
 
 const chart=document.getElementById("chart");
-const rowH=20, gap=4, left=34, right=44, top=8, maxCount=Math.max(...Object.values(counts));
+const rowH=20, gap=4, left=34, right=44, padT=8, maxCount=Math.max(...Object.values(counts));
 const chartW=380, barMax=chartW-left-right;
-const chartH=top*2+nStates*(rowH+gap);
+const chartH=padT*2+nStates*(rowH+gap);
 chart.setAttribute("viewBox",`0 0 ${chartW} ${chartH}`);
 chart.style.maxWidth=chartW+"px";
 let bars={};
 order.forEach((st,i)=>{
-  const y=top+i*(rowH+gap);
+  const y=padT+i*(rowH+gap);
   const w=Math.max(2,barMax*counts[st]/maxCount);
   chart.appendChild(el("text",{x:left-6,y:y+rowH*0.72,"text-anchor":"end",class:"blabel"})).textContent=st;
   const bar=el("rect",{x:left,y:y,width:w,height:rowH,rx:2,class:"bar"});
